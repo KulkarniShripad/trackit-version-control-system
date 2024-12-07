@@ -27,9 +27,11 @@ typedef struct commit
     struct commit *next;
 } commit;
 
+// display function
+void display_help();
+
 //function for initialization
 int init();
-
 
 //functions for add 
 char *prependDotSlash(const char *filename);
@@ -53,3 +55,12 @@ char *getHeadCommitHash();
 void printCommitHistory(commit *head);
 void freeCommitHistory(commit *head);
 void logHistory();
+
+//revert 
+void delete_directory(const char *path);
+void revert();
+
+//restore
+void clean_main_directory(const char *path);
+void create_directories(const char *path);
+void restore();
