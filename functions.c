@@ -3,10 +3,12 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <string.h>
+#include <dirent.h>
 #include "header.h"
 
-#define OUTPUT_LENGTH 40
+#define OUTPUT_LENGTH 41
 #define MAX_LINE_LENGTH 256
+#define MAX_LINE 1024
 #define OBJECTS_PATH ".trackit/objects/"
 #define HEAD_FILE_PATH ".trackit/HEAD"
 #define INDEX_FILE_PATH ".trackit/INDEX"
@@ -150,7 +152,7 @@ int add(int fileCount, char *filePath[])
         hash = generateHash(newFilepath);
 
         // Create the path for the hashed file
-        snprintf(hashedFilePath, sizeof(hashedFilePath), ".trackit/objects/%s", hash);
+        snprintf(hashedFilePath, sizeof(hashedFilePath), "%s%s", OBJECTS_PATH, hash);
 
         // Check if the file already exists
         FILE *existingFile = fopen(hashedFilePath, "rb");
@@ -487,7 +489,7 @@ void commitFiles(char *message)
 
 commit *loadCommit(const char *commitHash)
 {
-    char commitFilePath[512];
+    char commitFilePath[MAX_LINE_LENGTH];
     snprintf(commitFilePath, sizeof(commitFilePath), "%s%s", OBJECTS_PATH, commitHash);
 
     FILE *file = fopen(commitFilePath, "r");
@@ -638,4 +640,361 @@ void logHistory()
 
     // Free memory
     freeCommitHistory(head);
+}
+
+// Function to delete a directory and its contents
+void delete_directory(const char *path) {
+    if (!path) {
+        fprintf(stderr, "Error: NULL path provided to delete_directory\n");
+        return;
+    }
+
+    struct dirent *entry;
+    DIR *dir = opendir(path);
+    char full_path[1024];
+
+    if (!dir) {
+        perror("Failed to open directory");
+        return;
+    }
+
+    while ((entry = readdir(dir)) != NULL) {
+        // Skip "." and ".."
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }        
+
+        // Construct full path
+        snprintf(full_path, sizeof(full_path), "%s/%s", path, entry->d_name);
+
+        struct stat path_stat;
+        if (stat(full_path, &path_stat) == -1) {
+            perror("Failed to get file status");
+            continue;
+        }
+
+        if (S_ISDIR(path_stat.st_mode)) {
+            // Recursively delete subdirectory
+            delete_directory(full_path);
+        } else {
+            // Delete file
+            if (remove(full_path) != 0) {
+                perror("Failed to delete file");
+            } else {
+                printf("Deleted file: %s\n", full_path);
+            }
+        }
+    }
+
+    closedir(dir);
+
+    // Remove the now-empty directory
+    if (rmdir(path) != 0) {
+        perror("Failed to delete directory");
+    } else {
+        printf("Deleted directory: %s\n", path);
+    }
+}
+
+
+void revert() {
+    // Load current commit hash from head file
+    FILE *headFile = fopen(HEAD_FILE_PATH, "r");
+    if (!headFile) {
+        printf("Error: Head file not found.\n");
+        return;
+    }
+
+    char commitHash[MAX_LINE_LENGTH];
+    if (!fgets(commitHash, MAX_LINE_LENGTH, headFile)) {
+        printf("Error: Head is empty.\n");
+        fclose(headFile);
+        return;
+    }
+    fclose(headFile);
+
+    strtok(commitHash, "\n"); // Remove trailing newline
+
+    // Load current commit
+    commit *currentCommit = loadCommit(commitHash);
+    if (!currentCommit) return;
+
+    if (!currentCommit->parentCommit || strcmp(currentCommit->parentCommit, "(null)") == 0) {
+        printf("This is the first commit with no parent.\n");
+        printf("Are you sure you want to revert to the initial state? (y/n): ");
+        char response[10];
+        scanf("%9s", response);
+        if (strcmp(response, "y") == 0) {
+            delete_directory(".trackit");
+            init();
+        } else {
+            printf("Revert canceled.\n");
+        }
+        free(currentCommit);
+        return;
+    }
+
+    // Load staging file hash from current commit
+    char stagingFilePath[256];
+    sprintf(stagingFilePath, "%s%s", OBJECTS_PATH, currentCommit->stagingFiles);
+    FILE *stagingFile = fopen(stagingFilePath, "r");
+    if (!stagingFile) {
+        printf("Error: Staging file '%s' not found.\n", stagingFilePath);
+        free(currentCommit);
+        return;
+    }
+
+    // Delete files listed in staging file
+    char line[1024];
+    while (fgets(line, sizeof(line), stagingFile)) {
+        strtok(line, "\n"); // Remove trailing newline
+        //char *filePath = strtok(line, " "); // Extract file path
+        char *fileHash = strtok(NULL, " "); // Extract file hash
+
+        if (fileHash) {
+            char objectFilePath[256];
+            sprintf(objectFilePath, "%s%s", OBJECTS_PATH, fileHash);
+            if (unlink(objectFilePath) == 0) {
+                printf("Deleted object file: %s\n", objectFilePath);
+            } else {
+                printf("Error deleting object file: %s\n", objectFilePath);
+            }
+        }
+    }
+    fclose(stagingFile);
+
+    // Delete staging file itself
+    if (unlink(stagingFilePath) == 0) {
+        printf("Deleted staging file: %s\n", stagingFilePath);
+    } else {
+        printf("Error deleting staging file: %s\n", stagingFilePath);
+    }
+
+    // delete commit file itself
+    char commitFilePath[512];
+    snprintf(commitFilePath, sizeof(commitFilePath), "%s%s", OBJECTS_PATH, commitHash);
+    if (unlink(commitFilePath) == 0) {
+        printf("Deleted staging file: %s\n", commitFilePath);
+    } else {
+        printf("Error deleting staging file: %s\n", commitFilePath);
+    }
+
+    // Update head file with parent commit hash
+    headFile = fopen(HEAD_FILE_PATH, "w");
+    if (!headFile) {
+        printf("Error: Unable to write to head file.\n");
+        free(currentCommit);
+        return;
+    }
+    fprintf(headFile, "%s\n", currentCommit->parentCommit);
+    fclose(headFile);
+
+    printf("Reverted to parent commit: %s\n", currentCommit->parentCommit);
+    free(currentCommit);
+}
+
+void clean_main_directory(const char *path) {
+    struct dirent *entry;
+    DIR *dp = opendir(path);
+
+    if (!dp) {
+        perror("Failed to open directory");
+        return;
+    }
+
+    char full_path[MAX_LINE];
+    while ((entry = readdir(dp)) != NULL) {
+        // Skip "." and ".." entries
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+
+        // Skip the .trackit folder
+        if (strcmp(entry->d_name, ".trackit") == 0) {
+            continue;
+        }
+
+        // Construct the full path
+        snprintf(full_path, sizeof(full_path), "%s/%s", path, entry->d_name);
+
+        struct stat path_stat;
+        stat(full_path, &path_stat);
+
+        if (S_ISDIR(path_stat.st_mode)) {
+            // If it's a directory, recursively delete its contents
+            clean_main_directory(full_path);
+            rmdir(full_path);
+        } else {
+            // If it's a file, delete it
+            remove(full_path);
+        }
+    }
+
+    closedir(dp);
+}
+
+// Function to create directories recursively
+void create_directories(const char *path) {
+    char tmp[MAX_LINE];
+    snprintf(tmp, sizeof(tmp), "%s", path);
+    char *p = tmp;
+
+    // Create directories one by one
+    while ((p = strchr(p, '/')) != NULL) {
+        *p = '\0';
+        mkdir(tmp);
+        *p = '/';
+        p++;
+    }
+}
+
+// Function to extract the directory path from a full file path
+void extract_directory_path(const char *full_path, char *directory_path) {
+    strcpy(directory_path, full_path);
+    char *last_slash = strrchr(directory_path, '/');
+    if (last_slash) {
+        *last_slash = '\0'; // Remove the file name to leave only the directory path
+    } else {
+        directory_path[0] = '\0'; // No directory path, just a file name
+    }
+}
+
+// Function to remove double quotes from a string
+void remove_quotes(char *str) {
+    char *src = str, *dest = str;
+    while (*src) {
+        if (*src != '"') {
+            *dest++ = *src;
+        }
+        src++;
+    }
+    *dest = '\0';
+}
+
+// Function to restore files from the latest commit
+void restore() {
+    FILE *commit_file, *staging_file, *object_file, *output_file;
+    char head_commit_hash[OUTPUT_LENGTH], staging_file_path[MAX_LINE], stagging_file_hash[OUTPUT_LENGTH];
+    char file_path[MAX_LINE], file_hash[OUTPUT_LENGTH];
+    char object_file_path[MAX_LINE], directory_path[MAX_LINE];
+    char buffer[1024];
+    size_t bytes_read;
+
+    // Clean the main directory
+    clean_main_directory(".");
+
+    // Open the HEAD file to get the current head commit hash
+    commit_file = fopen(HEAD_FILE_PATH, "r");
+    if (!commit_file) {
+        perror("Failed to open HEAD");
+        return;
+    }
+    fscanf(commit_file, "%s", head_commit_hash);
+    fclose(commit_file);
+
+    // Open the head commit file
+    snprintf(staging_file_path, sizeof(staging_file_path), "%s%s", OBJECTS_PATH, head_commit_hash);
+    commit_file = fopen(staging_file_path, "r");
+    if (!commit_file) {
+        perror("Failed to open commit file");
+        return;
+    }
+
+    // Skip timestamp and message lines
+    fgets(stagging_file_hash, sizeof(staging_file_path), commit_file);
+    fgets(stagging_file_hash, sizeof(staging_file_path), commit_file);
+
+    // Read the staging file path
+    fscanf(commit_file, "%s", stagging_file_hash);
+    fclose(commit_file);
+
+    // Open the staging file
+    snprintf(staging_file_path, sizeof(staging_file_path), "%s%s", OBJECTS_PATH, stagging_file_hash);
+    staging_file = fopen(staging_file_path, "r");
+    if (!staging_file) {
+        perror("Failed to open staging file");
+        return;
+    }
+
+    // Process each entry in the staging file
+    while (fscanf(staging_file, "%s %s", file_path, file_hash) == 2) {
+        // Remove quotes from the file path
+        remove_quotes(file_path);
+
+        // Extract the directory path
+        extract_directory_path(file_path, directory_path);
+
+        // Create directories if the file path contains subdirectories
+        if (strlen(directory_path) > 0) {
+            create_directories(directory_path);
+        }
+
+        // Construct object file path
+        snprintf(object_file_path, sizeof(object_file_path), "%s%s", OBJECTS_PATH, file_hash);
+
+        // Open the object file
+        object_file = fopen(object_file_path, "rb");
+        if (!object_file) {
+            perror("Failed to open object file");
+            continue;
+        }
+
+        // Create and write to the output file
+        output_file = fopen(file_path, "wb");
+        if (!output_file) {
+            perror("Failed to create file in main directory");
+            fclose(object_file);
+            continue;
+        }
+
+        // Read and write the file content in chunks
+        while ((bytes_read = fread(buffer, 1, sizeof(buffer), object_file)) > 0) {
+            if (fwrite(buffer, 1, bytes_read, output_file) != bytes_read) {
+                perror("Error writing to target file");
+                fclose(object_file);
+                fclose(output_file);
+                return;
+            }
+        }
+
+        fclose(object_file);
+        fclose(output_file);
+    }
+
+    fclose(staging_file);
+    printf("Restore completed successfully.\n");
+}
+
+
+void display_help() {
+    printf("Welcome to TrackIt - A Simple Version Control System\n");
+    printf("====================================================\n");
+    printf("Below are the available commands and their descriptions:\n\n");
+
+    printf("1. groot init\n");
+    printf("   - Initializes a new TrackIt repository in the current directory.\n");
+    printf("   - Example: groot init\n\n");
+
+    printf("2. groot add <filename>\n");
+    printf("   - Adds a file to the staging area for tracking.\n");
+    printf("   - Example: groot add myfile.txt\n\n");
+
+    printf("3. groot commit -m \"<message>\"\n");
+    printf("   - Saves changes in the staging area as a new commit with a message.\n");
+    printf("   - Example: groot commit -m \"Initial commit\"\n\n");
+
+    printf("4. groot revert\n");
+    printf("   - Reverts the last commit\n");
+    printf("   - Example: groot revert \n\n");
+
+    printf("5. groot restore \n");
+    printf("   - Restores all the files from the last commit(Last version)\n");
+    printf("   - Example: groot restore \n\n");
+
+    printf("====================================================\n");
+    printf("Usage Notes:\n");
+    printf("1. Begin by initializing the repository using 'groot init'.\n");
+    printf("2. Add files to the staging area before committing them.\n");
+    printf("3. Use meaningful commit messages with the '-m' flag in 'groot commit'.\n");
+    printf("4. Use 'groot log' to view commit hashes for reverting or restoring files.\n\n");
 }
