@@ -11,7 +11,9 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    if (strcmp(argv[1], "init") == 0)
+    if (strcmp(argv[1], "help") == 0){
+        display_help();
+    }else if (strcmp(argv[1], "init") == 0)
     {
         int a = init();
         if (a != 0)
@@ -54,6 +56,11 @@ int main(int argc, char *argv[])
     }
     else if (strcmp(argv[1], "log") == 0){
         logHistory();
+    }else if (strcmp(argv[1], "revert") == 0){
+        revert();
+    }
+    else if (strcmp(argv[1], "restore") == 0){
+        restore();
     }
     else
     {
